@@ -7,10 +7,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import List
 from dotenv import load_dotenv
-
 from llama_parse import LlamaParse
 from langchain_core.documents import Document
-
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_mistralai import ChatMistralAI, MistralAIEmbeddings
 from langchain.chains import create_retrieval_chain, create_history_aware_retriever
