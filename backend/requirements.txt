@@ -9,10 +9,12 @@ llama-parse
 nest-asyncio
 
 # --- LangChain & AI Ecosystem ---
+# --- LangChain & AI Ecosystem ---
 langchain
 langchain-core
 langchain-community
 langchain-text-splitters
+langchain-classic
 
 # --- Mistral AI & Web Search ---
 langchain-mistralai
