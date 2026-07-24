@@ -22,7 +22,7 @@ from langchain_community.tools.tavily_search import TavilySearchResults
 load_dotenv()
 nest_asyncio.apply()
 
-app = FastAPI(title="PDF RAG API (Mistral + LlamaParse + Memory + Web)")
+app = FastAPI(title="PDF RAG API (Mistral + Memory + Strict Web Fallback)")
 
 app.add_middleware(
     CORSMiddleware,
@@ -107,18 +107,15 @@ async def upload_pdf(file: UploadFile = File(...)):
         ])
         history_aware_retriever = create_history_aware_retriever(llm_instance, retriever, contextualize_q_prompt)
 
-        # --- FIX: Highly structured system prompt so it strictly checks the PDF ---
+        # --- FIX: Strict Step-by-Step Instructions ---
         qa_prompt = ChatPromptTemplate.from_messages([
             ("system", (
-                "You are an intelligent AI assistant analyzing a user's uploaded document.\n"
-                "You must use ONLY the context provided below to answer the user's question.\n\n"
-                "--- START OF DOCUMENT CONTEXT ---\n"
-                "{context}\n"
-                "--- END OF DOCUMENT CONTEXT ---\n\n"
-                "Instructions:\n"
-                "1. Read the document context carefully.\n"
-                "2. If the exact answer or relevant information is in the context above, provide a helpful and detailed response.\n"
-                "3. If the context above DOES NOT contain the answer, do not guess. You MUST reply exactly and ONLY with this code: TRIGGER_WEB_SEARCH"
+                "You are an expert document analyst. Your job is to answer the user's question using ONLY the provided context.\n"
+                "Step 1: Check if the answer is contained in the Context below.\n"
+                "Step 2: If the answer is there, write a helpful response based ONLY on the context.\n"
+                "Step 3: If the answer is absolutely completely missing from the Context, you must reply with exactly this code: TRIGGER_WEB_SEARCH\n"
+                "Do not apologize. Do not say 'The document does not mention'. Just output TRIGGER_WEB_SEARCH if it is missing.\n\n"
+                "Context: {context}"
             )),
             MessagesPlaceholder("chat_history"),
             ("human", "{input}"),
@@ -151,6 +148,7 @@ async def chat_pdf(request: QueryRequest):
         "chat_history": langchain_history
     })
     
+    # --- FIX: Web Fallback Logic Restored ---
     if "TRIGGER_WEB_SEARCH" in res["answer"]:
         print("Answer not in PDF. Triggering Web Search Fallback...")
         try:
@@ -159,7 +157,12 @@ async def chat_pdf(request: QueryRequest):
             
             web_context = "\n\n".join([f"Source: {doc['url']}\nContent: {doc['content']}" for doc in search_results])
             
-            fallback_prompt = f"Answer the user's question using ONLY this live web search data. Do not use outside knowledge.\n\nWeb Data:\n{web_context}\n\nQuestion: {request.question}"
+            fallback_prompt = (
+                "You are a helpful AI. The user asked a question that was not in their document. "
+                "I have performed a web search. Answer the question using ONLY the web search data below.\n\n"
+                f"Web Data:\n{web_context}\n\n"
+                f"Question: {request.question}"
+            )
             fallback_res = llm_instance.invoke(fallback_prompt)
             
             top_url = search_results[0]['url'] if search_results else "https://google.com"
