@@ -17,12 +17,11 @@ from langchain_core.vectorstores import InMemoryVectorStore
 from langchain_core.prompts import ChatPromptTemplate, PromptTemplate, MessagesPlaceholder
 from langchain_core.messages import HumanMessage, AIMessage
 from langchain_core.output_parsers import JsonOutputParser
-from langchain_community.tools.tavily_search import TavilySearchResults
 
 load_dotenv()
 nest_asyncio.apply()
 
-app = FastAPI(title="PDF RAG API (Mistral + Memory + Strict Web Fallback)")
+app = FastAPI(title="PDF RAG API (Pure Document Chat + Fixed Pages)")
 
 app.add_middleware(
     CORSMiddleware,
@@ -81,6 +80,7 @@ async def upload_pdf(file: UploadFile = File(...)):
         )
         parsed_docs = parser.load_data(file_path)
         
+        # FIX: Ensure page metadata maps accurately starting from page 1
         docs = [
             Document(page_content=doc.text, metadata={"page": i + 1}) 
             for i, doc in enumerate(parsed_docs)
@@ -107,14 +107,13 @@ async def upload_pdf(file: UploadFile = File(...)):
         ])
         history_aware_retriever = create_history_aware_retriever(llm_instance, retriever, contextualize_q_prompt)
 
-        # --- FIX: Strict Step-by-Step Instructions ---
+        # Standard, clean RAG prompt
         qa_prompt = ChatPromptTemplate.from_messages([
             ("system", (
-                "You are an expert document analyst. Your job is to answer the user's question using ONLY the provided context.\n"
-                "Step 1: Check if the answer is contained in the Context below.\n"
-                "Step 2: If the answer is there, write a helpful response based ONLY on the context.\n"
-                "Step 3: If the answer is absolutely completely missing from the Context, you must reply with exactly this code: TRIGGER_WEB_SEARCH\n"
-                "Do not apologize. Do not say 'The document does not mention'. Just output TRIGGER_WEB_SEARCH if it is missing.\n\n"
+                "You are an intelligent AI assistant analyzing a document.\n"
+                "Use the following pieces of retrieved context to answer the question.\n"
+                "If you don't know the answer based on the context, state that the information is not in the document.\n"
+                "Keep the answer concise and helpful.\n\n"
                 "Context: {context}"
             )),
             MessagesPlaceholder("chat_history"),
@@ -148,34 +147,15 @@ async def chat_pdf(request: QueryRequest):
         "chat_history": langchain_history
     })
     
-    # --- FIX: Web Fallback Logic Restored ---
-    if "TRIGGER_WEB_SEARCH" in res["answer"]:
-        print("Answer not in PDF. Triggering Web Search Fallback...")
-        try:
-            web_search = TavilySearchResults(max_results=3)
-            search_results = web_search.invoke(request.question)
-            
-            web_context = "\n\n".join([f"Source: {doc['url']}\nContent: {doc['content']}" for doc in search_results])
-            
-            fallback_prompt = (
-                "You are a helpful AI. The user asked a question that was not in their document. "
-                "I have performed a web search. Answer the question using ONLY the web search data below.\n\n"
-                f"Web Data:\n{web_context}\n\n"
-                f"Question: {request.question}"
-            )
-            fallback_res = llm_instance.invoke(fallback_prompt)
-            
-            top_url = search_results[0]['url'] if search_results else "https://google.com"
-            
-            return {
-                "answer": fallback_res.content,
-                "sources": [{"page": "Web", "url": top_url, "content": "Live Internet Search"}]
-            }
-            
-        except Exception as e:
-            return {"answer": "I couldn't find the answer in the document, and my web search failed.", "sources": []}
-
-    sources = [{"page": doc.metadata.get("page", 1), "content": doc.page_content} for doc in res.get("context", [])]
+    # FIX: Properly extract the exact page number from document metadata without arbitrary shifts
+    sources = [
+        {
+            "page": doc.metadata.get("page", 1), 
+            "content": doc.page_content
+        } 
+        for doc in res.get("context", [])
+    ]
+    
     return {"answer": res["answer"], "sources": sources}
 
 
