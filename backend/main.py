@@ -11,13 +11,9 @@ from llama_parse import LlamaParse
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_mistralai import ChatMistralAI, MistralAIEmbeddings
-
-# --- FIXED IMPORTS ---
 from langchain_classic.chains import create_retrieval_chain, create_history_aware_retriever
 from langchain_classic.chains.combine_documents import create_stuff_documents_chain 
 from langchain_core.vectorstores import InMemoryVectorStore 
-# ---------------------
-
 from langchain_core.prompts import ChatPromptTemplate, PromptTemplate, MessagesPlaceholder
 from langchain_core.messages import HumanMessage, AIMessage
 from langchain_core.output_parsers import JsonOutputParser
@@ -78,7 +74,6 @@ async def upload_pdf(file: UploadFile = File(...)):
         shutil.copyfileobj(file.file, buffer)
 
     try:
-        # 1. Parse with LlamaParse
         parser = LlamaParse(
             api_key=os.getenv("LLAMA_CLOUD_API_KEY"),
             result_type="markdown", 
@@ -92,18 +87,11 @@ async def upload_pdf(file: UploadFile = File(...)):
         ]
         global_text = "\n".join([doc.page_content for doc in docs])
 
-        # FIX 1: Make chunk sizes MUCH larger so Markdown tables stay intact!
         text_splitter = RecursiveCharacterTextSplitter(chunk_size=3000, chunk_overlap=400)
         splits = text_splitter.split_documents(docs)
 
-        # FIX 2: Retrieve 6 chunks instead of 3 to give the AI more context
         embeddings = MistralAIEmbeddings()
-        
-        # --- FIXED VECTOR STORE ---
-        # Swapped Chroma for LangChain's ultra-light InMemoryVectorStore
         vectorstore = InMemoryVectorStore.from_documents(documents=splits, embedding=embeddings)
-        # --------------------------
-        
         retriever = vectorstore.as_retriever(search_kwargs={"k": 6})
 
         llm_instance = ChatMistralAI(model="mistral-small-latest", temperature=0)
@@ -119,14 +107,18 @@ async def upload_pdf(file: UploadFile = File(...)):
         ])
         history_aware_retriever = create_history_aware_retriever(llm_instance, retriever, contextualize_q_prompt)
 
-        # FIX 3: Use a highly specific secret trigger code (TRIGGER_WEB_SEARCH)
+        # --- FIX: Highly structured system prompt so it strictly checks the PDF ---
         qa_prompt = ChatPromptTemplate.from_messages([
             ("system", (
-                "You are an expert AI assistant analyzing a document.\n"
-                "Use ONLY the provided context to answer the question. The context may contain complex markdown tables.\n"
-                "If the exact answer is NOT in the context, you MUST reply with exactly and ONLY this code: 'TRIGGER_WEB_SEARCH'\n"
-                "Do not explain yourself. Do not include citations. Just answer the question directly.\n\n"
-                "Context:\n{context}"
+                "You are an intelligent AI assistant analyzing a user's uploaded document.\n"
+                "You must use ONLY the context provided below to answer the user's question.\n\n"
+                "--- START OF DOCUMENT CONTEXT ---\n"
+                "{context}\n"
+                "--- END OF DOCUMENT CONTEXT ---\n\n"
+                "Instructions:\n"
+                "1. Read the document context carefully.\n"
+                "2. If the exact answer or relevant information is in the context above, provide a helpful and detailed response.\n"
+                "3. If the context above DOES NOT contain the answer, do not guess. You MUST reply exactly and ONLY with this code: TRIGGER_WEB_SEARCH"
             )),
             MessagesPlaceholder("chat_history"),
             ("human", "{input}"),
@@ -159,7 +151,6 @@ async def chat_pdf(request: QueryRequest):
         "chat_history": langchain_history
     })
     
-    # FIX 4: Check for our secret trigger code
     if "TRIGGER_WEB_SEARCH" in res["answer"]:
         print("Answer not in PDF. Triggering Web Search Fallback...")
         try:

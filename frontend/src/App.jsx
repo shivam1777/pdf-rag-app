@@ -1000,9 +1000,9 @@ export default function App() {
                             <div className="mt-3.5 pt-3 border-t border-zinc-700/20 flex flex-wrap items-center gap-2">
                               <span className="text-[11px] opacity-60 font-medium">Suggested:</span>
                               {[
-                                "Summarize this in bullet points",
-                                "What are the key takeaways?",
-                                "Explain the main financial metrics"
+                                  "Summarize this document in bullet points",
+                                  "What are the key takeaways?",
+                                  "Explain the main topics covered in detail"
                               ].map((prompt, pIdx) => (
                                 <button
                                   key={pIdx}
