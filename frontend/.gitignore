@@ -25,3 +25,12 @@ dist-ssr
 .env
 venv/
 node_modules/
+.env
+venv/
+env/
+.venv/
+chroma_db/
+uploads/
+__pycache__/
+node_modules/
+dist/
