@@ -12,7 +12,7 @@ from llama_parse import LlamaParse
 from langchain_core.documents import Document
 
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_community.vectorstores import Chroma
+#--from langchain_community.vectorstores import Chroma
 from langchain_mistralai import ChatMistralAI, MistralAIEmbeddings
 from langchain.chains import create_retrieval_chain, create_history_aware_retriever
 from langchain.chains.combine_documents import create_stuff_documents_chain
