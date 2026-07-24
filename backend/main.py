@@ -143,7 +143,7 @@ async def chat_pdf(request: QueryRequest):
         "chat_history": langchain_history
     })
     
-    # Send multiple variations of keys so the frontend never misses it
+    # Send multiple variations of keys so the frontend never misses the page number
     sources = []
     for doc in res.get("context", []):
         page_num = doc.metadata.get("page", 1)
