@@ -11,8 +11,13 @@ from llama_parse import LlamaParse
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_mistralai import ChatMistralAI, MistralAIEmbeddings
+
+# --- FIXED IMPORTS ---
 from langchain_classic.chains import create_retrieval_chain, create_history_aware_retriever
-from langchain.chains.combine_documents import create_stuff_documents_chain
+from langchain_classic.chains.combine_documents import create_stuff_documents_chain 
+from langchain_core.vectorstores import InMemoryVectorStore 
+# ---------------------
+
 from langchain_core.prompts import ChatPromptTemplate, PromptTemplate, MessagesPlaceholder
 from langchain_core.messages import HumanMessage, AIMessage
 from langchain_core.output_parsers import JsonOutputParser
@@ -93,7 +98,12 @@ async def upload_pdf(file: UploadFile = File(...)):
 
         # FIX 2: Retrieve 6 chunks instead of 3 to give the AI more context
         embeddings = MistralAIEmbeddings()
-        vectorstore = Chroma.from_documents(documents=splits, embedding=embeddings)
+        
+        # --- FIXED VECTOR STORE ---
+        # Swapped Chroma for LangChain's ultra-light InMemoryVectorStore
+        vectorstore = InMemoryVectorStore.from_documents(documents=splits, embedding=embeddings)
+        # --------------------------
+        
         retriever = vectorstore.as_retriever(search_kwargs={"k": 6})
 
         llm_instance = ChatMistralAI(model="mistral-small-latest", temperature=0)
