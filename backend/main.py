@@ -21,7 +21,7 @@ from langchain_core.output_parsers import JsonOutputParser
 load_dotenv()
 nest_asyncio.apply()
 
-app = FastAPI(title="PDF RAG API (Pure Document Chat + Fixed Pages)")
+app = FastAPI(title="DocuMind Final API")
 
 app.add_middleware(
     CORSMiddleware,
@@ -39,7 +39,6 @@ rag_chain = None
 global_text = "" 
 llm_instance = None 
 
-# --- DATA MODELS ---
 class ChatMessage(BaseModel):
     role: str
     content: str
@@ -57,10 +56,9 @@ class StudyGuide(BaseModel):
     takeaways: List[str] = Field(description="3 to 5 key takeaways or important facts")
     quiz: List[QuizQuestion] = Field(description="3 quiz questions to test knowledge")
 
-# --- ENDPOINTS ---
 @app.get("/")
 async def root():
-    return {"message": "DocuMind API is running successfully!"}
+    return {"message": "DocuMind API is online and fully functional!"}
 
 @app.post("/upload")
 async def upload_pdf(file: UploadFile = File(...)):
@@ -80,7 +78,6 @@ async def upload_pdf(file: UploadFile = File(...)):
         )
         parsed_docs = parser.load_data(file_path)
         
-        # FIX: Ensure page metadata maps accurately starting from page 1
         docs = [
             Document(page_content=doc.text, metadata={"page": i + 1}) 
             for i, doc in enumerate(parsed_docs)
@@ -107,7 +104,6 @@ async def upload_pdf(file: UploadFile = File(...)):
         ])
         history_aware_retriever = create_history_aware_retriever(llm_instance, retriever, contextualize_q_prompt)
 
-        # Standard, clean RAG prompt
         qa_prompt = ChatPromptTemplate.from_messages([
             ("system", (
                 "You are an intelligent AI assistant analyzing a document.\n"
@@ -147,14 +143,16 @@ async def chat_pdf(request: QueryRequest):
         "chat_history": langchain_history
     })
     
-    # FIX: Properly extract the exact page number from document metadata without arbitrary shifts
-    sources = [
-        {
-            "page": doc.metadata.get("page", 1), 
+    # Send multiple variations of keys so the frontend never misses it
+    sources = []
+    for doc in res.get("context", []):
+        page_num = doc.metadata.get("page", 1)
+        sources.append({
+            "page": page_num,
+            "pageNumber": page_num,
+            "page_num": page_num,
             "content": doc.page_content
-        } 
-        for doc in res.get("context", [])
-    ]
+        })
     
     return {"answer": res["answer"], "sources": sources}
 
@@ -181,7 +179,6 @@ async def generate_study_guide():
         return guide
         
     except Exception as e:
-        print(f"Study Guide Error: {str(e)}") 
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
