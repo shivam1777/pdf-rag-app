@@ -18,10 +18,6 @@ langchain-text-splitters
 langchain-mistralai
 tavily-python
 
-# --- Vector Database & Embeddings ---
-chromadb
-sentence-transformers
-
 # --- Database & Auth ---
 supabase
 
