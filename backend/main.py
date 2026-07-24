@@ -175,7 +175,7 @@ async def chat_pdf(request: QueryRequest):
         except Exception as e:
             return {"answer": "I couldn't find the answer in the document, and my web search failed.", "sources": []}
 
-    sources = [{"page": doc.metadata.get("page", 0) + 1, "content": doc.page_content} for doc in res.get("context", [])]
+    sources = [{"page": doc.metadata.get("page", 1), "content": doc.page_content} for doc in res.get("context", [])]
     return {"answer": res["answer"], "sources": sources}
 
 
