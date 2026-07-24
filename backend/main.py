@@ -122,7 +122,7 @@ async def upload_pdf(file: UploadFile = File(...)):
         # FIX 3: Use a highly specific secret trigger code (TRIGGER_WEB_SEARCH)
         qa_prompt = ChatPromptTemplate.from_messages([
             ("system", (
-                "You are an expert financial assistant analyzing a document.\n"
+                "You are an expert AI assistant analyzing a document.\n"
                 "Use ONLY the provided context to answer the question. The context may contain complex markdown tables.\n"
                 "If the exact answer is NOT in the context, you MUST reply with exactly and ONLY this code: 'TRIGGER_WEB_SEARCH'\n"
                 "Do not explain yourself. Do not include citations. Just answer the question directly.\n\n"
