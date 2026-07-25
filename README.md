@@ -28,48 +28,55 @@ DocuMind AI is a powerful, full-stack Retrieval-Augmented Generation (RAG) web a
 
 Make sure you have Python (version 3.10+) and Node.js installed on your machine.
 
-### 1. Clone the Repository
+### 1. Clone the Repository :
+
 ```bash
+
 git clone [https://github.com/YOUR_USERNAME/pdf-rag-app.git](https://github.com/YOUR_USERNAME/pdf-rag-app.git)
 cd pdf-rag-app
 
-2. Setup the Backend Environment
+2. Setup the Backend Environment :
+
 Create a .env file inside the backend/ directory and add your API keys:
 
-Code snippet
+Code snippet : 
+
 LLAMA_CLOUD_API_KEY=your_llama_cloud_api_key_here
 MISTRAL_API_KEY=your_mistral_api_key_here
 TAVILY_API_KEY=your_tavily_api_key_here
 
-3. Install Backend Dependencies
+3. Install Backend Dependencies :
+
 Navigate to the backend directory and install the required packages:
 
 ```Bash
 cd backend
-pip install -r requirements.txt```
+pip install -r requirements.txt
 
-4. Install Frontend Dependencies
+
+4. Install Frontend Dependencies :
 Open a separate terminal window, navigate to the frontend directory, and install packages:
 
 ```Bash
 cd frontend
 npm install
-🏃‍♂️ Running the Project Locally
-Start the Backend Server
-From your backend folder, run: uvicorn main:app --reload --port 8000 ```  OR
+
+🏃‍♂️ Running the Project Locally :
+Start the Backend Server run the command in new terminal --
 
 ```Bash
 uvicorn main:app --reload
-The FastAPI backend will run locally at http://127.0.0.1:8000.```
+The FastAPI backend will run locally at http://127.0.0.1:8000.
 
-Start the Frontend Development Server
-From your frontend folder, run:
+Start the Frontend Development Server :
+
+From your frontend folder, run :
 
 ```Bash
 npm run dev
-Open the provided http://localhost:5173 link in your browser to use DocuMind AI.
+Open the provided -- http://localhost:5173 link in your browser to use DocuMind AI.
 
-📡 API Endpoints Overview
+📡 API Endpoints Overview :
 
 GET /: Health check to verify API status.
 
