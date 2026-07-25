@@ -7,21 +7,24 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import List
 from dotenv import load_dotenv
+
 from llama_parse import LlamaParse
 from langchain_core.documents import Document
+
 from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_community.vectorstores import Chroma
 from langchain_mistralai import ChatMistralAI, MistralAIEmbeddings
-from langchain_classic.chains import create_retrieval_chain, create_history_aware_retriever
-from langchain_classic.chains.combine_documents import create_stuff_documents_chain 
-from langchain_core.vectorstores import InMemoryVectorStore 
+from langchain.chains import create_retrieval_chain, create_history_aware_retriever
+from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain_core.prompts import ChatPromptTemplate, PromptTemplate, MessagesPlaceholder
 from langchain_core.messages import HumanMessage, AIMessage
 from langchain_core.output_parsers import JsonOutputParser
+from langchain_community.tools.tavily_search import TavilySearchResults
 
 load_dotenv()
 nest_asyncio.apply()
 
-app = FastAPI(title="DocuMind Comprehensive RAG API")
+app = FastAPI(title="PDF RAG API (Mistral + LlamaParse + Memory + Web)")
 
 app.add_middleware(
     CORSMiddleware,
@@ -34,7 +37,7 @@ app.add_middleware(
 UPLOAD_DIR = "uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-# Global States for session management
+# Global States
 rag_chain = None
 global_text = "" 
 llm_instance = None 
@@ -60,7 +63,7 @@ class StudyGuide(BaseModel):
 # --- ENDPOINTS ---
 @app.get("/")
 async def root():
-    return {"message": "DocuMind API is fully operational with all features combined!"}
+    return {"message": "DocuMind API is running successfully!"}
 
 @app.post("/upload")
 async def upload_pdf(file: UploadFile = File(...)):
@@ -73,7 +76,7 @@ async def upload_pdf(file: UploadFile = File(...)):
         shutil.copyfileobj(file.file, buffer)
 
     try:
-        # 1. Parse document using LlamaParse
+        # 1. Parse with LlamaParse
         parser = LlamaParse(
             api_key=os.getenv("LLAMA_CLOUD_API_KEY"),
             result_type="markdown", 
@@ -81,24 +84,23 @@ async def upload_pdf(file: UploadFile = File(...)):
         )
         parsed_docs = parser.load_data(file_path)
         
-        # 2. Build Document list with explicit 1-indexed metadata
         docs = [
             Document(page_content=doc.text, metadata={"page": i + 1}) 
             for i, doc in enumerate(parsed_docs)
         ]
         global_text = "\n".join([doc.page_content for doc in docs])
 
-        # 3. Split text and initialize embeddings / vector store
+        # FIX 1: Make chunk sizes MUCH larger so Markdown tables stay intact!
         text_splitter = RecursiveCharacterTextSplitter(chunk_size=3000, chunk_overlap=400)
         splits = text_splitter.split_documents(docs)
 
+        # FIX 2: Retrieve 6 chunks instead of 3 to give the AI more context
         embeddings = MistralAIEmbeddings()
-        vectorstore = InMemoryVectorStore.from_documents(documents=splits, embedding=embeddings)
+        vectorstore = Chroma.from_documents(documents=splits, embedding=embeddings)
         retriever = vectorstore.as_retriever(search_kwargs={"k": 6})
 
         llm_instance = ChatMistralAI(model="mistral-small-latest", temperature=0)
         
-        # 4. Setup History-Aware Retriever for conversational memory
         contextualize_q_prompt = ChatPromptTemplate.from_messages([
             ("system", (
                 "Given a chat history and the latest user question which might reference context in the chat history, "
@@ -110,14 +112,14 @@ async def upload_pdf(file: UploadFile = File(...)):
         ])
         history_aware_retriever = create_history_aware_retriever(llm_instance, retriever, contextualize_q_prompt)
 
-        # 5. Strict Document QA Prompt
+        # FIX 3: Use a highly specific secret trigger code (TRIGGER_WEB_SEARCH)
         qa_prompt = ChatPromptTemplate.from_messages([
             ("system", (
-                "You are an intelligent AI document assistant.\n"
-                "Use the following pieces of retrieved context to answer the question.\n"
-                "If you don't know the answer based on the context, state that the information is not in the document.\n"
-                "Keep the answer concise and helpful.\n\n"
-                "Context: {context}"
+                "You are an expert financial assistant analyzing a document.\n"
+                "Use ONLY the provided context to answer the question. The context may contain complex markdown tables.\n"
+                "If the exact answer is NOT in the context, you MUST reply with exactly and ONLY this code: 'TRIGGER_WEB_SEARCH'\n"
+                "Do not explain yourself. Do not include citations. Just answer the question directly.\n\n"
+                "Context:\n{context}"
             )),
             MessagesPlaceholder("chat_history"),
             ("human", "{input}"),
@@ -126,7 +128,7 @@ async def upload_pdf(file: UploadFile = File(...)):
         combine_docs_chain = create_stuff_documents_chain(llm_instance, qa_prompt)
         rag_chain = create_retrieval_chain(history_aware_retriever, combine_docs_chain)
 
-        return {"message": "PDF processed successfully with all systems active!", "filename": file.filename}
+        return {"message": "PDF processed successfully!", "filename": file.filename}
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -150,17 +152,29 @@ async def chat_pdf(request: QueryRequest):
         "chat_history": langchain_history
     })
     
-    # Format sources with multi-key fallbacks so the frontend safely displays page numbers
-    sources = []
-    for doc in res.get("context", []):
-        page_num = doc.metadata.get("page", 1)
-        sources.append({
-            "page": page_num,
-            "pageNumber": page_num,
-            "page_num": page_num,
-            "content": doc.page_content
-        })
-    
+    # FIX 4: Check for our secret trigger code
+    if "TRIGGER_WEB_SEARCH" in res["answer"]:
+        print("Answer not in PDF. Triggering Web Search Fallback...")
+        try:
+            web_search = TavilySearchResults(max_results=3)
+            search_results = web_search.invoke(request.question)
+            
+            web_context = "\n\n".join([f"Source: {doc['url']}\nContent: {doc['content']}" for doc in search_results])
+            
+            fallback_prompt = f"Answer the user's question using ONLY this live web search data. Do not use outside knowledge.\n\nWeb Data:\n{web_context}\n\nQuestion: {request.question}"
+            fallback_res = llm_instance.invoke(fallback_prompt)
+            
+            top_url = search_results[0]['url'] if search_results else "https://google.com"
+            
+            return {
+                "answer": fallback_res.content,
+                "sources": [{"page": "Web", "url": top_url, "content": "Live Internet Search"}]
+            }
+            
+        except Exception as e:
+            return {"answer": "I couldn't find the answer in the document, and my web search failed.", "sources": []}
+
+    sources = [{"page": doc.metadata.get("page", 0) + 1, "content": doc.page_content} for doc in res.get("context", [])]
     return {"answer": res["answer"], "sources": sources}
 
 
@@ -186,6 +200,7 @@ async def generate_study_guide():
         return guide
         
     except Exception as e:
+        print(f"Study Guide Error: {str(e)}") 
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
