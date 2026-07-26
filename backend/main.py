@@ -1,131 +1,185 @@
-import React, { useState } from "react";
-import axios from "axios";
+import os
+import shutil
+import uvicorn
+import nest_asyncio
+from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
+from typing import List
+from dotenv import load_dotenv
+from llama_parse import LlamaParse
+from langchain_core.documents import Document
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_mistralai import ChatMistralAI, MistralAIEmbeddings
+from langchain_classic.chains import create_retrieval_chain, create_history_aware_retriever
+from langchain_classic.chains.combine_documents import create_stuff_documents_chain 
+from langchain_core.vectorstores import InMemoryVectorStore 
+from langchain_core.prompts import ChatPromptTemplate, PromptTemplate, MessagesPlaceholder
+from langchain_core.messages import HumanMessage, AIMessage
+from langchain_core.output_parsers import JsonOutputParser
 
-export default function App() {
-  const [messages, setMessages] = useState([]);
-  const [input, setInput] = useState("");
-  const [pdfUploaded, setPdfUploaded] = useState(false);
-  const [currentPage, setCurrentPage] = useState(1);
+load_dotenv()
+nest_asyncio.apply()
 
-  // Handle PDF Upload
-  const handleFileUpload = async (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
+app = FastAPI(title="DocuMind Final API (Render Optimized)")
 
-    const formData = new FormData();
-    formData.append("file", file);
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-    try {
-      const res = await axios.post("https://your-render-backend-url.onrender.com/upload", formData);
-      alert(res.data.message);
-      setPdfUploaded(true);
-    } catch (err) {
-      alert("Error uploading PDF");
-    }
-  };
+UPLOAD_DIR = "uploads"
+os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-  // Handle Chat Submit
-  const handleSendMessage = async (e) => {
-    e.preventDefault();
-    if (!input.trim()) return;
+# Global States
+rag_chain = None
+global_text = "" 
+llm_instance = None 
 
-    const userMessage = { role: "user", content: input };
-    setMessages((prev) => [...prev, userMessage]);
-    setInput("");
+class ChatMessage(BaseModel):
+    role: str
+    content: str
 
-    try {
-      // Format chat history for backend
-      const history = messages.map((m) => ({ role: m.role, content: m.content }));
-      
-      const res = await axios.post("https://your-render-backend-url.onrender.com/chat", {
-        question: userMessage.content,
-        history: history,
-      });
+class QueryRequest(BaseModel):
+    question: str
+    history: List[ChatMessage] = []
 
-      const botMessage = {
-        role: "bot",
-        content: res.data.answer,
-        sources: res.data.sources || [],
-      };
+class QuizQuestion(BaseModel):
+    question: str = Field(description="A multiple choice or short answer question")
+    answer: str = Field(description="The correct answer")
 
-      setMessages((prev) => [...prev, botMessage]);
-    } catch (err) {
-      setMessages((prev) => [...prev, { role: "bot", content: "Error connecting to server." }]);
-    }
-  };
+class StudyGuide(BaseModel):
+    summary: str = Field(description="A brief 2-3 sentence summary of the document")
+    takeaways: List[str] = Field(description="3 to 5 key takeaways or important facts")
+    quiz: List[QuizQuestion] = Field(description="3 quiz questions to test knowledge")
 
-  // Function to handle clicking a source page badge
-  const scrollToPage = (pageNum) => {
-    setCurrentPage(pageNum);
-    console.log(`Jumping to PDF viewer page: ${pageNum}`);
-    // Add your react-pdf scroll logic here if applicable
-  };
+@app.get("/")
+async def root():
+    return {"message": "DocuMind API is online and fully functional!"}
 
-  return (
-    <div className="flex h-screen bg-gray-900 text-white">
-      {/* Sidebar */}
-      <div className="w-80 bg-gray-950 p-4 border-r border-gray-800 flex flex-col justify-between">
-        <div>
-          <h1 className="text-xl font-bold text-emerald-400 mb-6">DocuMind AI</h1>
-          <input type="file" accept=".pdf" onChange={handleFileUpload} className="mb-4 text-sm" />
-          <p className="text-xs text-gray-400">
-            {pdfUploaded ? "✅ PDF Ready for Queries" : "⚠️ Please upload a PDF first"}
-          </p>
-        </div>
-      </div>
+@app.post("/upload")
+async def upload_pdf(file: UploadFile = File(...)):
+    global rag_chain, global_text, llm_instance
+    if not file.filename.endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Only PDF files allowed.")
 
-      {/* Main Chat Area */}
-      <div className="flex-1 flex flex-col justify-between p-6">
-        <div className="overflow-y-auto space-y-4 pr-2 flex-1">
-          {messages.map((msg, index) => (
-            <div
-              key={index}
-              className={`p-4 rounded-lg max-w-2xl ${
-                msg.role === "user" ? "bg-emerald-600 ml-auto" : "bg-gray-800 mr-auto"
-              }`}
-            >
-              <p className="whitespace-pre-wrap">{msg.content}</p>
+    file_path = os.path.join(UPLOAD_DIR, file.filename)
+    with open(file_path, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
 
-              {/* --- CRITICAL SECTION: VISIBLE & CLICKABLE SOURCES --- */}
-              {msg.sources && msg.sources.length > 0 && (
-                <div className="flex flex-wrap items-center gap-2 mt-3 pt-2 border-t border-gray-700/50 text-xs">
-                  <span className="font-semibold text-gray-400">SOURCES:</span>
-                  {msg.sources.map((src, idx) => {
-                    // Safe fallback for retrieving page numbers from backend response
-                    const pageNum = src.page || src.pageNumber || src.page_num || 1;
-                    return (
-                      <button
-                        key={idx}
-                        onClick={() => scrollToPage(pageNum)}
-                        className="bg-emerald-950/80 text-emerald-400 border border-emerald-500/30 px-2 py-0.5 rounded hover:bg-emerald-900 transition cursor-pointer font-medium"
-                      >
-                        Page {pageNum}
-                      </button>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-          ))}
-        </div>
+    try:
+        parser = LlamaParse(
+            api_key=os.getenv("LLAMA_CLOUD_API_KEY"),
+            result_type="markdown", 
+            verbose=True
+        )
+        parsed_docs = parser.load_data(file_path)
+        
+        docs = [
+            Document(page_content=doc.text, metadata={"page": i + 1}) 
+            for i, doc in enumerate(parsed_docs)
+        ]
+        global_text = "\n".join([doc.page_content for doc in docs])
 
-        {/* Input Form */}
-        <form onSubmit={handleSendMessage} className="mt-4 flex gap-2">
-          <input
-            type="text"
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            placeholder="Ask anything about your uploaded PDF..."
-            className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-4 py-2 focus:outline-none focus:border-emerald-500"
-          />
-          <button
-            type="submit"
-            className="bg-emerald-600 hover:bg-emerald-500 px-6 py-2 rounded-lg font-medium transition"
-          >
-            Send
-          </button>
-        </form>
-      </div>
-    </div>
-  );
-}
+        text_splitter = RecursiveCharacterTextSplitter(chunk_size=2000, chunk_overlap=300)
+        splits = text_splitter.split_documents(docs)
+
+        # Using lightweight memory store optimized to prevent 512MB RAM overflow
+        embeddings = MistralAIEmbeddings()
+        vectorstore = InMemoryVectorStore.from_documents(documents=splits, embedding=embeddings)
+        retriever = vectorstore.as_retriever(search_kwargs={"k": 4})
+
+        llm_instance = ChatMistralAI(model="mistral-small-latest", temperature=0)
+        
+        contextualize_q_prompt = ChatPromptTemplate.from_messages([
+            ("system", (
+                "Given a chat history and the latest user question which might reference context in the chat history, "
+                "formulate a standalone question which can be understood without the chat history. "
+                "Do NOT answer the question, just reformulate it if needed and otherwise return it as is."
+            )),
+            MessagesPlaceholder("chat_history"),
+            ("human", "{input}"),
+        ])
+        history_aware_retriever = create_history_aware_retriever(llm_instance, retriever, contextualize_q_prompt)
+
+        qa_prompt = ChatPromptTemplate.from_messages([
+            ("system", (
+                "You are an intelligent AI assistant analyzing a document.\n"
+                "Use the following pieces of retrieved context to answer the question.\n"
+                "If you don't know the answer based on the context, state that the information is not in the document.\n"
+                "Keep the answer concise and helpful.\n\n"
+                "Context: {context}"
+            )),
+            MessagesPlaceholder("chat_history"),
+            ("human", "{input}"),
+        ])
+        
+        combine_docs_chain = create_stuff_documents_chain(llm_instance, qa_prompt)
+        rag_chain = create_retrieval_chain(history_aware_retriever, combine_docs_chain)
+
+        return {"message": "PDF processed successfully!", "filename": file.filename}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/chat")
+async def chat_pdf(request: QueryRequest):
+    global rag_chain, llm_instance
+    if not rag_chain:
+        raise HTTPException(status_code=400, detail="Please upload a PDF first.")
+
+    langchain_history = []
+    for msg in request.history:
+        if msg.role == "user":
+            langchain_history.append(HumanMessage(content=msg.content))
+        elif msg.role == "bot":
+            langchain_history.append(AIMessage(content=msg.content))
+
+    res = rag_chain.invoke({
+        "input": request.question,
+        "chat_history": langchain_history
+    })
+    
+    sources = []
+    for doc in res.get("context", []):
+        page_num = doc.metadata.get("page", 1)
+        sources.append({
+            "page": page_num,
+            "pageNumber": page_num,
+            "page_num": page_num,
+            "content": doc.page_content
+        })
+    
+    return {"answer": res["answer"], "sources": sources}
+
+
+@app.post("/study-guide")
+async def generate_study_guide():
+    global global_text
+    if not global_text:
+        raise HTTPException(status_code=400, detail="Please upload a PDF first.")
+    
+    try:
+        context = global_text[:8000] # Safe limit for RAM management
+        llm = ChatMistralAI(model="mistral-small-latest", temperature=0.2)
+        parser = JsonOutputParser(pydantic_object=StudyGuide)
+        
+        prompt = PromptTemplate(
+            template="Analyze the following document and extract the information.\n{format_instructions}\n\nDocument Text:\n{context}\n",
+            input_variables=["context"],
+            partial_variables={"format_instructions": parser.get_format_instructions()},
+        )
+        
+        chain = prompt | llm | parser
+        guide = chain.invoke({"context": context})
+        return guide
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+if __name__ == "__main__":
+    uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
