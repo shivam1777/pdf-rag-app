@@ -1,5 +1,5 @@
 import os
-import shutil
+import tempfile
 import uvicorn
 import nest_asyncio
 from fastapi import FastAPI, UploadFile, File, HTTPException
@@ -10,21 +10,16 @@ from dotenv import load_dotenv
 
 from llama_parse import LlamaParse
 from langchain_core.documents import Document
-
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_community.vectorstores import Chroma
-from langchain_mistralai import ChatMistralAI, MistralAIEmbeddings
-from langchain.chains import create_retrieval_chain, create_history_aware_retriever
-from langchain.chains.combine_documents import create_stuff_documents_chain
-from langchain_core.prompts import ChatPromptTemplate, PromptTemplate, MessagesPlaceholder
-from langchain_core.messages import HumanMessage, AIMessage
+from langchain_mistralai import ChatMistralAI
+from langchain_core.prompts import ChatPromptTemplate, PromptTemplate
 from langchain_core.output_parsers import JsonOutputParser
 from langchain_community.tools.tavily_search import TavilySearchResults
 
 load_dotenv()
 nest_asyncio.apply()
 
-app = FastAPI(title="PDF RAG API (Mistral + LlamaParse + Memory + Web)")
+app = FastAPI(title="PDF RAG API (Render 512MB Optimized)")
 
 app.add_middleware(
     CORSMiddleware,
@@ -34,11 +29,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-UPLOAD_DIR = "uploads"
-os.makedirs(UPLOAD_DIR, exist_ok=True)
-
-# Global States
-rag_chain = None
+# Global States (RAM optimized for 512MB limit)
+global_chunks = []
 global_text = "" 
 llm_instance = None 
 
@@ -60,29 +52,53 @@ class StudyGuide(BaseModel):
     takeaways: List[str] = Field(description="3 to 5 key takeaways or important facts")
     quiz: List[QuizQuestion] = Field(description="3 quiz questions to test knowledge")
 
+# --- LIGHTWEIGHT RETRIEVER FUNCTION ---
+def retrieve_relevant_chunks(query: str, chunks: List[Document], k: int = 4) -> str:
+    """Keyword-based scoring retriever to save RAM (No heavy embedding models needed)"""
+    query_words = set(query.lower().split())
+    scored_chunks = []
+    
+    for chunk in chunks:
+        content_lower = chunk.page_content.lower()
+        score = sum(1 for word in query_words if word in content_lower)
+        scored_chunks.append((score, chunk))
+    
+    scored_chunks.sort(key=lambda x: x[0], reverse=True)
+    top_chunks = [chunk for score, chunk in scored_chunks[:k]]
+    
+    return "\n\n".join([f"[Page {doc.metadata.get('page', 1)}]:\n{doc.page_content}" for doc in top_chunks])
+
 # --- ENDPOINTS ---
 @app.get("/")
 async def root():
-    return {"message": "DocuMind API is running successfully!"}
+    return {"message": "DocuMind API is running successfully (In-Memory Mode)!"}
 
 @app.post("/upload")
 async def upload_pdf(file: UploadFile = File(...)):
-    global rag_chain, global_text, llm_instance
+    global global_chunks, global_text, llm_instance
     if not file.filename.endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF files allowed.")
 
-    file_path = os.path.join(UPLOAD_DIR, file.filename)
-    with open(file_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
-
     try:
-        # 1. Parse with LlamaParse
+        # Read file contents into memory directly
+        file_bytes = await file.read()
+        
+        # Save temporarily to a secure system temp file instead of local folder
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+            tmp.write(file_bytes)
+            tmp_path = tmp.name
+
+        # 1. Parse with LlamaParse using temp file path
         parser = LlamaParse(
             api_key=os.getenv("LLAMA_CLOUD_API_KEY"),
             result_type="markdown", 
             verbose=True
         )
-        parsed_docs = parser.load_data(file_path)
+        parsed_docs = parser.load_data(tmp_path)
+        
+        # Clean up temp file immediately after parsing
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
         
         docs = [
             Document(page_content=doc.text, metadata={"page": i + 1}) 
@@ -90,45 +106,14 @@ async def upload_pdf(file: UploadFile = File(...)):
         ]
         global_text = "\n".join([doc.page_content for doc in docs])
 
-        # FIX 1: Make chunk sizes MUCH larger so Markdown tables stay intact!
-        text_splitter = RecursiveCharacterTextSplitter(chunk_size=3000, chunk_overlap=400)
-        splits = text_splitter.split_documents(docs)
+        # Chunk sizes to keep Markdown tables intact
+        text_splitter = RecursiveCharacterTextSplitter(chunk_size=2000, chunk_overlap=300)
+        global_chunks = text_splitter.split_documents(docs)
 
-        # FIX 2: Retrieve 6 chunks instead of 3 to give the AI more context
-        embeddings = MistralAIEmbeddings()
-        vectorstore = Chroma.from_documents(documents=splits, embedding=embeddings)
-        retriever = vectorstore.as_retriever(search_kwargs={"k": 6})
-
+        # Initialize lightweight Chat model
         llm_instance = ChatMistralAI(model="mistral-small-latest", temperature=0)
-        
-        contextualize_q_prompt = ChatPromptTemplate.from_messages([
-            ("system", (
-                "Given a chat history and the latest user question which might reference context in the chat history, "
-                "formulate a standalone question which can be understood without the chat history. "
-                "Do NOT answer the question, just reformulate it if needed and otherwise return it as is."
-            )),
-            MessagesPlaceholder("chat_history"),
-            ("human", "{input}"),
-        ])
-        history_aware_retriever = create_history_aware_retriever(llm_instance, retriever, contextualize_q_prompt)
 
-        # FIX 3: Use a highly specific secret trigger code (TRIGGER_WEB_SEARCH)
-        qa_prompt = ChatPromptTemplate.from_messages([
-            ("system", (
-                "You are an expert financial assistant analyzing a document.\n"
-                "Use ONLY the provided context to answer the question. The context may contain complex markdown tables.\n"
-                "If the exact answer is NOT in the context, you MUST reply with exactly and ONLY this code: 'TRIGGER_WEB_SEARCH'\n"
-                "Do not explain yourself. Do not include citations. Just answer the question directly.\n\n"
-                "Context:\n{context}"
-            )),
-            MessagesPlaceholder("chat_history"),
-            ("human", "{input}"),
-        ])
-        
-        combine_docs_chain = create_stuff_documents_chain(llm_instance, qa_prompt)
-        rag_chain = create_retrieval_chain(history_aware_retriever, combine_docs_chain)
-
-        return {"message": "PDF processed successfully!", "filename": file.filename}
+        return {"message": "PDF processed successfully in-memory!", "filename": file.filename}
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -136,24 +121,39 @@ async def upload_pdf(file: UploadFile = File(...)):
 
 @app.post("/chat")
 async def chat_pdf(request: QueryRequest):
-    global rag_chain, llm_instance
-    if not rag_chain:
+    global global_chunks, llm_instance
+    if not global_chunks or not llm_instance:
         raise HTTPException(status_code=400, detail="Please upload a PDF first.")
 
-    langchain_history = []
-    for msg in request.history:
-        if msg.role == "user":
-            langchain_history.append(HumanMessage(content=msg.content))
-        elif msg.role == "bot":
-            langchain_history.append(AIMessage(content=msg.content))
+    # Retrieve relevant text chunks using lightweight keyword matching
+    context = retrieve_relevant_chunks(request.question, global_chunks, k=4)
 
-    res = rag_chain.invoke({
-        "input": request.question,
-        "chat_history": langchain_history
-    })
-    
-    # FIX 4: Check for our secret trigger code
-    if "TRIGGER_WEB_SEARCH" in res["answer"]:
+    # Format chat history text manually for lightweight execution
+    history_text = ""
+    for msg in request.history:
+        role = "User" if msg.role == "user" else "Assistant"
+        history_text += f"{role}: {msg.content}\n"
+
+    # Construct clean prompt
+    prompt = f"""You are an expert financial assistant analyzing a document.
+Use ONLY the provided context to answer the question. The context may contain complex markdown tables.
+If the exact answer is NOT in the context, you MUST reply with exactly and ONLY this code: 'TRIGGER_WEB_SEARCH'
+Do not explain yourself. Do not include citations. Just answer the question directly.
+
+Chat History:
+{history_text}
+
+Context:
+{context}
+
+Question: {request.question}
+Answer:"""
+
+    res = llm_instance.invoke(prompt)
+    answer_text = res.content
+
+    # Check for secret trigger code for web search fallback
+    if "TRIGGER_WEB_SEARCH" in answer_text:
         print("Answer not in PDF. Triggering Web Search Fallback...")
         try:
             web_search = TavilySearchResults(max_results=3)
@@ -174,19 +174,17 @@ async def chat_pdf(request: QueryRequest):
         except Exception as e:
             return {"answer": "I couldn't find the answer in the document, and my web search failed.", "sources": []}
 
-    sources = [{"page": doc.metadata.get("page", 0) + 1, "content": doc.page_content} for doc in res.get("context", [])]
-    return {"answer": res["answer"], "sources": sources}
+    return {"answer": answer_text, "sources": [{"page": 1, "content": context[:300]}]}
 
 
 @app.post("/study-guide")
 async def generate_study_guide():
-    global global_text
-    if not global_text:
+    global global_text, llm_instance
+    if not global_text or not llm_instance:
         raise HTTPException(status_code=400, detail="Please upload a PDF first.")
     
     try:
-        context = global_text[:12000] 
-        llm = ChatMistralAI(model="mistral-small-latest", temperature=0.2)
+        context = global_text[:8000] # Limit context size for 512MB RAM safety
         parser = JsonOutputParser(pydantic_object=StudyGuide)
         
         prompt = PromptTemplate(
@@ -195,7 +193,7 @@ async def generate_study_guide():
             partial_variables={"format_instructions": parser.get_format_instructions()},
         )
         
-        chain = prompt | llm | parser
+        chain = prompt | llm_instance | parser
         guide = chain.invoke({"context": context})
         return guide
         
